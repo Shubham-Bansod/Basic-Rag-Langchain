@@ -53,22 +53,45 @@ GOOGLE_API_KEY=your_google_api_key
 
 Keep `.env` private. Do not commit API keys or other secrets to Git.
 
-## Use
+## Interactive chat application
 
-1. Put one or more PDF files in `documents/`.
-2. Ingest the PDFs and build the local Chroma collection:
+The project includes an interactive terminal chat loop. After each question, it retrieves and compresses relevant PDF passages, then prints a structured Gemini answer and its source references. Enter multiple questions in one run; type `exit` or `quit` to end the session.
+
+### Start the chat
+
+1. Add PDF files to `documents/`.
+2. Build or refresh the local Chroma collection:
 
    ```bash
    python ingestion.py
    ```
 
-3. Start the question-answering CLI:
+3. Start the interactive chat:
 
    ```bash
    python query.py
    ```
 
-4. Enter a question. Type `exit` or `quit` to stop.
+4. Ask questions at the `You:` prompt.
+
+Example:
+
+```text
+Ask questions about your PDF documents. Type 'exit' or 'quit' to quit.
+
+You: What is the leave policy?
+
+Answer:
+...answer based on retrieved PDF passages...
+
+Relevant sources:
+- employee_handbook.pdf, page 4
+
+You: exit
+Goodbye!
+```
+
+Each question is answered using the documents retrieved for that question. The current CLI does not retain conversation history between questions.
 
 `ingestion.py` replaces the existing contents of the `pdf_documents` collection each time it runs. Keep your source PDFs; the Chroma database is generated data and can be rebuilt by running ingestion again.
 
