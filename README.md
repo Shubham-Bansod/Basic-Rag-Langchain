@@ -119,6 +119,18 @@ The answer model returns a `RAGResponse` object with these fields:
 
 The application maps valid source IDs back to the retrieved documents' metadata. IDs outside the retrieved set are discarded, and source references are suppressed when `found` is false. The model does not supply source filenames or page numbers; those come from the documents' metadata.
 
+## Memory in RAG
+
+Memory lets a RAG application use information from earlier turns. It is separate from document retrieval:
+
+- **Knowledge base:** The persistent Chroma collection stores chunks from PDFs. It is created by `ingestion.py` and provides reference material for retrieval.
+- **Conversation memory:** Stores or summarizes user questions and assistant replies so follow-up questions can use prior chat context.
+- **User memory:** An optional longer-lived store for user preferences or facts. It should be added only when needed, with clear retention and access rules.
+
+This project currently has **no conversation memory**. Each prompt is answered independently; for example, a follow-up like “When does that start?” will not know what “that” refers to unless the question itself provides the context. The Chroma PDF collection is persistent knowledge, not chat history.
+
+If conversation memory is added, keep it scoped to the correct user and session, include only the relevant recent turns or a concise summary, and define when it expires or is deleted. Treat remembered text as untrusted input just like retrieved PDF text. Memory must not override system instructions, document access permissions, or application rules. Avoid storing secrets or sensitive details unless there is a clear need and an appropriate retention policy.
+
 ## Reducing prompt injection risk
 
 Retrieved PDF text is untrusted input. A document can contain malicious or misleading instructions, so retrieval and compression must never grant it authority over the application.
