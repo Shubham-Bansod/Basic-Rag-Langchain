@@ -30,11 +30,48 @@ vector_store = Chroma(
 
 
 # 3. Create retriever
+# retriever = vector_store.as_retriever(
+#     search_type="mmr",
+#     search_kwargs={
+#         "k": 3,
+#         "fetch_k": 10,
+#         "lambda_mult": 0.5
+#     }
+# )
+
 retriever = vector_store.as_retriever(
-    search_type="similarity",
-    search_kwargs={"k": 3}
+    search_type="similarity_score_threshold",
+    search_kwargs={
+        "score_threshold": 0.5,
+        "k": 3
+    }
 )
 
+# retriever = vector_store.as_retriever(
+#     search_type="similarity",
+#     search_kwargs={
+#         "k": 3,
+#         "filter": {
+#             "$and": [
+#                 {"category": "HR"},
+#                 {"source": "leave_policy.pdf"}
+#             ]
+#         }
+#     }
+# )
+# retriever = vector_store.as_retriever(
+#     search_type="similarity",
+#     search_kwargs={
+#         "k": 5,
+#         "filter": {
+#             "$and": [
+#                 {"source": "leave_policy.pdf"},
+#                 {"page": {"$gte": 9}},
+#                 {"page": {"$lte": 19}}
+#             ]
+#         }
+#     }
+# )
 
 # 4. Initialize Gemini LLM
 llm = ChatGoogleGenerativeAI(
@@ -71,22 +108,53 @@ rag_chain = prompt | llm
 
 
 # 7. Ask questions
-def ask_question(question):
+
+# Dynamic retrieval with metadata filtering
+
+def ask_question(question, category=None, source=None):
+
+    # Build metadata filter
+    filters = []
+
+    if category:
+        filters.append({
+            "category": category
+        })
+
+    if source:
+        filters.append({
+            "source": source
+        })
+
+    # Combine filters
+    metadata_filter = None
+
+    if len(filters) == 1:
+        metadata_filter = filters[0]
+
+    elif len(filters) > 1:
+        metadata_filter = {
+            "$and": filters
+        }
 
     # Retrieve relevant documents
-    retrieved_docs = retriever.invoke(question)
-
-    if not retrieved_docs:
-        print("No relevant documents found.")
-        return
-
-    # Combine retrieved document content
-    context = "\n\n".join(
-        document.page_content
-        for document in retrieved_docs
+    retrieved_docs = vector_store.similarity_search(
+        query=question,
+        k=3,
+        filter=metadata_filter
     )
 
-    # Pass context and question to Gemini
+    if not retrieved_docs:
+        print("No matching documents found.")
+        return
+
+    # Prepare context
+    context = "\n\n".join(
+        doc.page_content
+        for doc in retrieved_docs
+    )
+
+    # Generate answer
     response = rag_chain.invoke({
         "context": context,
         "question": question
@@ -95,16 +163,14 @@ def ask_question(question):
     print("\nAnswer:")
     print(response.content)
 
-    # Display sources
     print("\nSources:")
 
-    for document in retrieved_docs:
-
-        source = document.metadata.get("source", "Unknown")
-        page = document.metadata.get("page", "Unknown")
-
-        print(f"PDF: {source} | Page: {page + 1 if isinstance(page, int) else page}")
-
+    for doc in retrieved_docs:
+        print({
+            "source": doc.metadata.get("source"),
+            "page": doc.metadata.get("page"),
+            "category": doc.metadata.get("category")
+        })
 
 # 8. Terminal application
 def main():

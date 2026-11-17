@@ -4,10 +4,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter,sentence_based_chunking
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_chroma import Chroma
-
 
 # Load environment variables
 load_dotenv()
@@ -21,6 +20,20 @@ embeddings = GoogleGenerativeAIEmbeddings(
     model="gemini-embedding-001"
 )
 
+def get_category(filename):
+
+    filename = filename.lower()
+
+    if "employee" in filename or "leave" in filename:
+        return "HR"
+
+    elif "security" in filename:
+        return "SECURITY"
+
+    elif "finance" in filename:
+        return "FINANCE"
+
+    return "GENERAL"
 
 # 1. Load PDF documents
 def load_pdfs():
@@ -29,26 +42,23 @@ def load_pdfs():
 
     pdf_files = list(DOCUMENTS_DIR.glob("*.pdf"))
 
-    if not pdf_files:
-        print("No PDF files found!")
-        return documents
-
     for pdf_path in pdf_files:
-
-        print(f"Loading: {pdf_path.name}")
 
         loader = PyPDFLoader(str(pdf_path))
 
         pdf_documents = loader.load()
 
-        # Add source filename to metadata
+        category = get_category(pdf_path.name)
+
         for document in pdf_documents:
+
             document.metadata["source"] = pdf_path.name
+
+            document.metadata["category"] = category
 
         documents.extend(pdf_documents)
 
     return documents
-
 
 # 2. Split documents into chunks
 def split_documents(documents):
@@ -62,6 +72,27 @@ def split_documents(documents):
 
     return chunks
 
+def compare_chunking(documents):
+
+    recursive_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200
+    )
+
+    recursive_chunks = recursive_splitter.split_documents(
+        documents
+    )
+
+    sentence_chunks = sentence_based_chunking(documents)
+
+    print("Recursive chunks:", len(recursive_chunks))
+    print("Sentence chunks:", len(sentence_chunks))
+
+    print("\nRecursive example:")
+    print(recursive_chunks[0].page_content)
+
+    print("\nSentence example:")
+    print(sentence_chunks[0].page_content)
 
 # 3. Store documents in ChromaDB
 def store_in_chroma(chunks):
@@ -83,6 +114,15 @@ def store_in_chroma(chunks):
     if existing_ids:
         vector_store.delete(ids=existing_ids)
 
+    print("\nChecking stored metadata:")
+
+    for item in vector_store.get(
+        limit=5,
+        include=["metadatas"]
+    )["metadatas"]:
+
+        print(item)
+
     # Add new document chunks
     vector_store.add_documents(chunks)
 
@@ -95,6 +135,8 @@ def main():
     print("\nStarting PDF ingestion...\n")
 
     documents = load_pdfs()
+
+    compare_chunking(documents)
 
     if not documents:
         return
