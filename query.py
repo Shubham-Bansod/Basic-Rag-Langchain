@@ -1,22 +1,26 @@
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_community.retrievers import BM25Retriever
-# python3 -m pip install rank_bm25
+from langchain_classic.retrievers import EnsembleRetriever
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
-
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+# python3 -m pip install rank_bm25 langchain-classic
 load_dotenv()
 
 CHROMA_DB_DIR = "./chroma_db"
 COLLECTION_NAME = "pdf_documents"
 RETRIEVAL_COUNT = 3
+FETCH_COUNT = 5
 
 
 def create_bm25_retriever():
     """Build a keyword retriever from the chunks saved during ingestion."""
     vector_store = Chroma(
         collection_name=COLLECTION_NAME,
+        embedding_function=GoogleGenerativeAIEmbeddings(
+            model="gemini-embedding-001"
+        ),
         persist_directory=CHROMA_DB_DIR,
     )
     stored_data = vector_store.get(include=["documents", "metadatas"])
@@ -32,9 +36,18 @@ def create_bm25_retriever():
     if not documents:
         raise RuntimeError("No documents found. Run ingestion.py first.")
 
-    retriever = BM25Retriever.from_documents(documents)
-    retriever.k = RETRIEVAL_COUNT
-    return retriever
+    bm25_retriever = BM25Retriever.from_documents(documents)
+    bm25_retriever.k = FETCH_COUNT
+
+    vector_retriever = vector_store.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": FETCH_COUNT},
+    )
+
+    return EnsembleRetriever(
+        retrievers=[bm25_retriever, vector_retriever],
+        weights=[0.5, 0.5],
+    )
 
 
 retriever = create_bm25_retriever()
@@ -54,7 +67,7 @@ rag_chain = prompt | llm
 
 
 def ask_question(question):
-    documents = retriever.invoke(question)
+    documents = retriever.invoke(question)[:RETRIEVAL_COUNT]
     if not documents:
         print("No relevant documents found.")
         return
