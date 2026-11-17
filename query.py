@@ -5,7 +5,7 @@ from langchain_google_genai import (
     GoogleGenerativeAIEmbeddings,
     ChatGoogleGenerativeAI
 )
-
+from sentence_transformers import CrossEncoder
 from langchain_chroma import Chroma
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -28,6 +28,49 @@ vector_store = Chroma(
     persist_directory=CHROMA_DB_DIR
 )
 
+from langchain_community.cross_encoders import (
+    HuggingFaceCrossEncoder
+)
+
+from langchain_classic.retrievers import (
+    ContextualCompressionRetriever
+)
+
+from langchain_classic.retrievers.document_compressors import (
+    CrossEncoderReranker
+)
+
+
+# # 1. Initialize cross-encoder
+# model = HuggingFaceCrossEncoder(
+#     model_name="cross-encoder/ms-marco-MiniLM-L6-v2",
+#     model_kwargs={"device": "cpu"}
+# )
+
+# # 2. Create reranker
+# compressor = CrossEncoderReranker(
+#     model=model,
+#     top_n=3
+# )
+
+# # 3. Initial vector retrieval
+# base_retriever = vector_store.as_retriever(
+#     search_kwargs={"k": 10}
+# )
+
+# # 4. Combine retriever and reranker
+# compression_retriever = ContextualCompressionRetriever(
+#     base_retriever=base_retriever,
+#     base_compressor=compressor
+# )
+
+# # 5. Retrieve reranked documents
+# question = "What are the security measures?"
+
+# documents = compression_retriever.invoke(question)
+
+# for doc in documents:
+#     print(doc.page_content)
 
 # 3. Create retriever
 # retriever = vector_store.as_retriever(
@@ -110,67 +153,86 @@ rag_chain = prompt | llm
 # 7. Ask questions
 
 # Dynamic retrieval with metadata filtering
+reranker = CrossEncoder(
+    "cross-encoder/ms-marco-MiniLM-L6-v2"
+)
 
-def ask_question(question, category=None, source=None):
+def rerank_documents(question, documents):
 
-    # Build metadata filter
-    filters = []
+    # Create query-document pairs
+    pairs = [
+        (question, doc.page_content)
+        for doc in documents
+    ]
 
-    if category:
-        filters.append({
-            "category": category
-        })
+    # Generate relevance scores
+    scores = reranker.predict(pairs)
 
-    if source:
-        filters.append({
-            "source": source
-        })
+    # Combine documents with their scores
+    ranked_documents = list(zip(documents, scores))
 
-    # Combine filters
-    metadata_filter = None
+    # Sort by score: highest first
+    ranked_documents.sort(
+        key=lambda item: float(item[1]),
+        reverse=True
+    )
 
-    if len(filters) == 1:
-        metadata_filter = filters[0]
+    # Return reranked documents
+    return ranked_documents
 
-    elif len(filters) > 1:
-        metadata_filter = {
-            "$and": filters
-        }
 
-    # Retrieve relevant documents
+def ask_question(question):
+
+    # STEP 1: Retrieve top 10 candidates
     retrieved_docs = vector_store.similarity_search(
         query=question,
-        k=3,
-        filter=metadata_filter
+        k=10
     )
 
     if not retrieved_docs:
-        print("No matching documents found.")
+        print("No documents found.")
         return
 
-    # Prepare context
-    context = "\n\n".join(
-        doc.page_content
-        for doc in retrieved_docs
+    print(f"\nRetrieved {len(retrieved_docs)} chunks")
+
+    # STEP 2: Rerank candidates
+    ranked_documents = rerank_documents(
+        question,
+        retrieved_docs
     )
 
-    # Generate answer
+    # STEP 3: Select top 3
+    top_documents = ranked_documents[:3]
+
+    print("\nReranked results:")
+    print("-" * 50)
+
+    for rank, (doc, score) in enumerate(
+        top_documents, start=1
+    ):
+
+        print(f"\nRank: {rank}")
+        print(f"Score: {float(score):.4f}")
+        print(f"Source: {doc.metadata.get('source')}")
+        print(f"Content: {doc.page_content[:200]}")
+
+    # STEP 4: Prepare context
+    context = "\n\n".join(
+        doc.page_content
+        for doc, score in top_documents
+    )
+
+    # STEP 5: Generate answer using Gemini
     response = rag_chain.invoke({
         "context": context,
         "question": question
     })
 
-    print("\nAnswer:")
+    print("\nFinal Answer:")
+    print("-" * 50)
     print(response.content)
 
-    print("\nSources:")
 
-    for doc in retrieved_docs:
-        print({
-            "source": doc.metadata.get("source"),
-            "page": doc.metadata.get("page"),
-            "category": doc.metadata.get("category")
-        })
 
 # 8. Terminal application
 def main():
