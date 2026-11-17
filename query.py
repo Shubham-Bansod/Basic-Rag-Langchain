@@ -1,26 +1,38 @@
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_community.retrievers import BM25Retriever
-from langchain_classic.retrievers import EnsembleRetriever
+from langchain_classic.retrievers import (
+    ContextualCompressionRetriever,
+    EnsembleRetriever,
+)
+from langchain_classic.retrievers.document_compressors import (
+    DocumentCompressorPipeline,
+    EmbeddingsFilter,
+    LLMChainExtractor,
+)
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-# python3 -m pip install rank_bm25 langchain-classic
+from langchain_google_genai import (
+    ChatGoogleGenerativeAI,
+    GoogleGenerativeAIEmbeddings,
+)
+
 load_dotenv()
 
 CHROMA_DB_DIR = "./chroma_db"
 COLLECTION_NAME = "pdf_documents"
-RETRIEVAL_COUNT = 3
-FETCH_COUNT = 5
+FETCH_COUNT = 8
+COMPRESSED_COUNT = 3
+
+embeddings = GoogleGenerativeAIEmbeddings(model="gemini-embedding-001")
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
 
-def create_bm25_retriever():
-    """Build a keyword retriever from the chunks saved during ingestion."""
+def create_retriever():
+    """Create hybrid BM25/vector retrieval with contextual compression."""
     vector_store = Chroma(
         collection_name=COLLECTION_NAME,
-        embedding_function=GoogleGenerativeAIEmbeddings(
-            model="gemini-embedding-001"
-        ),
+        embedding_function=embeddings,
         persist_directory=CHROMA_DB_DIR,
     )
     stored_data = vector_store.get(include=["documents", "metadatas"])
@@ -32,27 +44,34 @@ def create_bm25_retriever():
         )
         if content
     ]
-
     if not documents:
         raise RuntimeError("No documents found. Run ingestion.py first.")
 
     bm25_retriever = BM25Retriever.from_documents(documents)
     bm25_retriever.k = FETCH_COUNT
-
     vector_retriever = vector_store.as_retriever(
         search_type="similarity",
         search_kwargs={"k": FETCH_COUNT},
     )
-
-    return EnsembleRetriever(
+    hybrid_retriever = EnsembleRetriever(
         retrievers=[bm25_retriever, vector_retriever],
         weights=[0.5, 0.5],
     )
 
+    compressor = DocumentCompressorPipeline(
+        transformers=[
+            EmbeddingsFilter(embeddings=embeddings, k=COMPRESSED_COUNT),
+            LLMChainExtractor.from_llm(llm),
+        ]
+    )
+    return ContextualCompressionRetriever(
+        base_retriever=hybrid_retriever,
+        base_compressor=compressor,
+    )
 
-retriever = create_bm25_retriever()
 
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+retriever = create_retriever()
+
 prompt = ChatPromptTemplate.from_template(
     """Answer using only the information in the context. If the answer is not
 present, say you could not find it in the provided documents.
@@ -67,14 +86,18 @@ rag_chain = prompt | llm
 
 
 def ask_question(question):
-    documents = retriever.invoke(question)[:RETRIEVAL_COUNT]
-    if not documents:
-        print("No relevant documents found.")
+    compressed_docs = retriever.invoke(question)
+    if not compressed_docs:
+        print("No relevant information found.")
         return
 
-    context = "\n\n".join(document.page_content for document in documents)
+    context = "\n\n".join(doc.page_content for doc in compressed_docs)
     response = rag_chain.invoke({"context": context, "question": question})
     print("\nAnswer:\n" + response.content)
+
+    print("\nRelevant sources:")
+    for document in compressed_docs:
+        print(f"- {document.metadata.get('source', 'Unknown source')}")
 
 
 def main():
